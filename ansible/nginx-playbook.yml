@@ -1,0 +1,114 @@
+- hosts: webservers
+  become: yes
+  tasks:
+    - name: Install Nginx
+      apt:
+        name: nginx
+        update_cache: yes
+        state: latest
+    
+    - name: Create simple web page
+      copy:
+        content: "ini adalah web {{ web_number }}\n"
+        dest: /var/www/html/index.html
+        mode: '0644'
+    
+    - name: Create simple Nginx config
+      copy:
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              root /var/www/html;
+              server_name _;
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+          }
+        dest: /etc/nginx/sites-available/default
+        mode: '0644'
+      notify: Restart Nginx
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Remove old entries from /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: ".*web{{ web_number }}.example.com"
+        state: absent
+
+    - name: Add new entry to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ inventory_hostname }} web{{ web_number }}.example.com"
+        state: present
+
+- hosts: localhost
+  become: yes
+  tasks:
+    - name: Remove old web server entries
+      lineinfile:
+        path: /etc/hosts
+        regexp: ".*web[1-3].example.com"
+        state: absent
+      with_items: "{{ groups['webservers'] }}"
+
+    - name: Remove old loadbalancer entry
+      lineinfile:
+        path: /etc/hosts
+        regexp: ".*lb.example.com"
+        state: absent
+
+    - name: Add web server entries
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ item }} web{{ groups['webservers'].index(item) + 1 }}.example.com"
+        state: present
+      with_items: "{{ groups['webservers'] }}"
+
+    - name: Add loadbalancer entry
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ groups['loadbalancer'][0] }} lb.example.com"
+        state: present
+
+- hosts: loadbalancer
+  become: yes
+  vars:
+    webserver_ips: "{{ groups['webservers'] }}"
+  tasks:
+    - name: Install HAProxy
+      apt:
+        name: haproxy
+        update_cache: yes
+        state: latest
+
+    - name: Configure HAProxy
+      template:
+        src: templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+
+    - name: Create hosts file entries for web servers
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ item }} web{{ groups['webservers'].index(item) + 1 }}.example.com"
+        state: present
+      with_items: "{{ groups['webservers'] }}"
+
+    - name: Add loadbalancer entry to hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ inventory_hostname }} lb.example.com"
+        state: present
+
+    - name: Restart HAProxy service
+      service:
+        name: haproxy
+        state: restarted
+        enabled: yes
+
+
